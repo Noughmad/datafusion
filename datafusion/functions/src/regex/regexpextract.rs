@@ -595,6 +595,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_regexp_extract() {
+        test_case_sensitive_regexp_extract_scalar();
+        test_case_sensitive_regexp_extract_scalar_invalid_pattern();
+        test_case_sensitive_regexp_extract_scalar_mismatched_types();
+
+        test_case_sensitive_regexp_extract_array::<GenericStringArray<i32>>();
+        test_case_sensitive_regexp_extract_array::<GenericStringArray<i64>>();
+        test_case_sensitive_regexp_extract_array::<StringViewArray>();
+
+        test_case_sensitive_regexp_extract_array_values::<GenericStringArray<i32>>();
+        test_case_sensitive_regexp_extract_array_values::<GenericStringArray<i64>>();
+        test_case_sensitive_regexp_extract_array_values::<StringViewArray>();
+
+        test_case_regexp_extract_array_flags::<GenericStringArray<i32>>();
+        test_case_regexp_extract_array_flags::<GenericStringArray<i64>>();
+        test_case_regexp_extract_array_flags::<StringViewArray>();
+    }
+
     fn test_case_sensitive_regexp_extract_scalar() {
         let values = ["aaaac", "ac", "abc", "abcccc", "abbc"];
         let regex = "(a+)(b)?(c)";
@@ -644,6 +662,76 @@ mod tests {
         });
     }
 
+    fn test_case_sensitive_regexp_extract_scalar_invalid_pattern() {
+        let values = ["aaaac", "ac", "abc", "abcccc", "abbc"];
+        let regex = "(a+)(b/\\)?(c)";
+        let idx = ScalarValue::Int32(Some(2));
+
+        values.iter().for_each(|&v| {
+            // utf8
+            let v_sv = ScalarValue::Utf8(Some(v.to_string()));
+            let regex_sv = ScalarValue::Utf8(Some(regex.to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let pattern_err = re.expect_err("broken pattern should have failed");
+            assert!(pattern_err.strip_backtrace().starts_with(
+                "Arrow error: Compute error: Regular expression did not compile"
+            ));
+
+            // largeutf8
+            let v_sv = ScalarValue::LargeUtf8(Some(v.to_string()));
+            let regex_sv = ScalarValue::LargeUtf8(Some(regex.to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let pattern_err = re.expect_err("broken pattern should have failed");
+            assert!(pattern_err.strip_backtrace().starts_with(
+                "Arrow error: Compute error: Regular expression did not compile"
+            ));
+
+            // utf8view
+            let v_sv = ScalarValue::Utf8View(Some(v.to_string()));
+            let regex_sv = ScalarValue::Utf8View(Some(regex.to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let pattern_err = re.expect_err("broken pattern should have failed");
+            assert!(pattern_err.strip_backtrace().starts_with(
+                "Arrow error: Compute error: Regular expression did not compile"
+            ));
+        });
+    }
+
+    fn test_case_sensitive_regexp_extract_scalar_mismatched_types() {
+        let values = ["aaaac", "ac", "abc", "abcccc", "abbc"];
+        let regex = "(a+)(b)?(c)";
+        let idx = ScalarValue::Int32(Some(2));
+
+        values.iter().for_each(|&v| {
+            // utf8
+            let v_sv = ScalarValue::Utf8(Some(v.to_string()));
+            let regex_sv = ScalarValue::LargeUtf8(Some(regex.to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let type_err = re.expect_err("broken pattern should have failed");
+            assert!(
+                type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the input arrays to be of type")
+            );
+
+            // largeutf8
+            let v_sv = ScalarValue::LargeUtf8(Some(v.to_string()));
+            let regex_sv = ScalarValue::Utf8View(Some(regex.to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let type_err = re.expect_err("broken pattern should have failed");
+            assert!(
+                type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the input arrays to be of type")
+            );
+
+            // utf8view
+            let v_sv = ScalarValue::Utf8View(Some(v.to_string()));
+            let regex_sv = ScalarValue::Utf8(Some(regex.to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let type_err = re.expect_err("broken pattern should have failed");
+            assert!(
+                type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the input arrays to be of type")
+            );
+        });
+    }
+
     fn regexp_extract_with_scalar_values(args: &[ScalarValue]) -> Result<ColumnarValue> {
         let args_values = args
             .iter()
@@ -663,5 +751,62 @@ mod tests {
             return_field: Field::new("f", args[0].data_type(), true).into(),
             config_options: Arc::new(ConfigOptions::default()),
         })
+    }
+
+    fn test_case_sensitive_regexp_extract_array<A>()
+    where
+        A: From<Vec<&'static str>> + Array + 'static,
+    {
+        let values = A::from(vec!["", "100-200", "foo", "aaaac", "aaaabcccc"]);
+        let regex = A::from(vec![
+            "(a)",
+            r"(\d+)-(\d+)",
+            r"(\d+)",
+            "(a+)(b)?(c)",
+            "(a+)(b)?(c)",
+        ]);
+        let idx = Int32Array::from(vec![1, 1, 1, 2, 2]);
+
+        let expected = A::from(vec!["", "100", "", "", "b"]);
+
+        let re = regexp_extract_func(&[Arc::new(values), Arc::new(regex), Arc::new(idx)])
+            .unwrap();
+        assert_eq!(re.as_ref(), &expected);
+    }
+
+    fn test_case_sensitive_regexp_extract_array_values<A>()
+    where
+        A: From<Vec<&'static str>> + Array + 'static,
+    {
+        let values = A::from(vec!["abc", "100-200", "foo", "aaaac", "aaaabcccc"]);
+        let regex = A::from(vec!["(a+)(b)?(c)"]);
+        let idx = Int32Array::from(vec![2]);
+
+        let expected = A::from(vec!["b", "", "", "", "b"]);
+
+        let re = regexp_extract_func(&[Arc::new(values), Arc::new(regex), Arc::new(idx)])
+            .unwrap();
+        assert_eq!(re.as_ref(), &expected);
+    }
+
+    fn test_case_regexp_extract_array_flags<A>()
+    where
+        A: From<Vec<&'static str>> + Array + 'static,
+    {
+        let values = A::from(vec!["aBc", "aBc", "AABCC", "AABCC", "AAAbCCC", "AAAbCCC"]);
+        let regex = A::from(vec!["(a+)(b)?(c)"]);
+        let idx = Int32Array::from(vec![2]);
+        let flags = A::from(vec!["", "i", "", "i", "", "i"]);
+
+        let expected = A::from(vec!["", "B", "", "B", "", "b"]);
+
+        let re = regexp_extract_func(&[
+            Arc::new(values),
+            Arc::new(regex),
+            Arc::new(idx),
+            Arc::new(flags),
+        ])
+        .unwrap();
+        assert_eq!(re.as_ref(), &expected);
     }
 }
