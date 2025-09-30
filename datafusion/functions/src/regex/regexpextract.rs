@@ -198,12 +198,18 @@ pub fn regexp_extract(
         (Some(flags), is_flags_scalar)
     });
 
+    let idx_array_primitive = idx_array.as_primitive_opt::<Int32Type>().ok_or_else(|| {
+        ArrowError::ComputeError(
+            "regexp_extract() expected the idx array to be an integer type".to_string(),
+        )
+    })?;
+
     match (values.data_type(), regex_array.data_type(), flags_array) {
         (Utf8, Utf8, None) => regexp_extract_inner(
             values.as_string::<i32>(),
             regex_array.as_string::<i32>(),
             is_regex_scalar,
-            idx_array.as_primitive::<Int32Type>(),
+            idx_array_primitive,
             is_idx_scalar,
             None,
             is_flags_scalar,
@@ -212,7 +218,7 @@ pub fn regexp_extract(
             values.as_string::<i32>(),
             regex_array.as_string::<i32>(),
             is_regex_scalar,
-            idx_array.as_primitive::<Int32Type>(),
+            idx_array_primitive,
             is_idx_scalar,
             Some(flags_array.as_string::<i32>()),
             is_flags_scalar,
@@ -221,7 +227,7 @@ pub fn regexp_extract(
             values.as_string::<i64>(),
             regex_array.as_string::<i64>(),
             is_regex_scalar,
-            idx_array.as_primitive::<Int32Type>(),
+            idx_array_primitive,
             is_idx_scalar,
             None,
             is_flags_scalar,
@@ -230,7 +236,7 @@ pub fn regexp_extract(
             values.as_string::<i64>(),
             regex_array.as_string::<i64>(),
             is_regex_scalar,
-            idx_array.as_primitive::<Int32Type>(),
+            idx_array_primitive,
             is_idx_scalar,
             Some(flags_array.as_string::<i64>()),
             is_flags_scalar,
@@ -239,7 +245,7 @@ pub fn regexp_extract(
             values.as_string_view(),
             regex_array.as_string_view(),
             is_regex_scalar,
-            idx_array.as_primitive::<Int32Type>(),
+            idx_array_primitive,
             is_idx_scalar,
             None,
             is_flags_scalar,
@@ -248,7 +254,7 @@ pub fn regexp_extract(
             values.as_string_view(),
             regex_array.as_string_view(),
             is_regex_scalar,
-            idx_array.as_primitive::<Int32Type>(),
+            idx_array_primitive,
             is_idx_scalar,
             Some(flags_array.as_string_view()),
             is_flags_scalar,
@@ -581,7 +587,7 @@ fn collect_to_array<'a>(
             let result = result_iter.collect::<Result<StringViewArray, ArrowError>>()?;
             Ok(Arc::new(result) as ArrayRef)
         }
-        other => exec_err!("Unsupported data type {other:?} for function regex_replace")
+        other => exec_err!("Unsupported data type {other:?} for function regex_extract")
             .map_err(Into::into),
     }
 }
@@ -599,6 +605,7 @@ mod tests {
         test_case_sensitive_regexp_extract_scalar();
         test_case_sensitive_regexp_extract_scalar_invalid_pattern();
         test_case_sensitive_regexp_extract_scalar_mismatched_types();
+        test_case_sensitive_regexp_extract_scalar_invalid_types();
 
         test_case_sensitive_regexp_extract_array::<GenericStringArray<i32>>();
         test_case_sensitive_regexp_extract_array::<GenericStringArray<i64>>();
@@ -707,7 +714,7 @@ mod tests {
             let v_sv = ScalarValue::Utf8(Some(v.to_string()));
             let regex_sv = ScalarValue::LargeUtf8(Some(regex.to_string()));
             let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
-            let type_err = re.expect_err("broken pattern should have failed");
+            let type_err = re.expect_err("mismatched types pattern should have failed");
             assert!(
                 type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the input arrays to be of type")
             );
@@ -716,7 +723,7 @@ mod tests {
             let v_sv = ScalarValue::LargeUtf8(Some(v.to_string()));
             let regex_sv = ScalarValue::Utf8View(Some(regex.to_string()));
             let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
-            let type_err = re.expect_err("broken pattern should have failed");
+            let type_err = re.expect_err("mismatched types should have failed");
             assert!(
                 type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the input arrays to be of type")
             );
@@ -725,9 +732,45 @@ mod tests {
             let v_sv = ScalarValue::Utf8View(Some(v.to_string()));
             let regex_sv = ScalarValue::Utf8(Some(regex.to_string()));
             let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
-            let type_err = re.expect_err("broken pattern should have failed");
+            let type_err = re.expect_err("mismatched types should have failed");
             assert!(
                 type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the input arrays to be of type")
+            );
+        });
+    }
+
+    fn test_case_sensitive_regexp_extract_scalar_invalid_types() {
+        let values = ["aaaac", "ac", "abc", "abcccc", "abbc"];
+        let regex = "(a+)(b)?(c)";
+        let idx: ScalarValue = ScalarValue::Int32(Some(2));
+
+        values.iter().for_each(|&v| {
+            // value not a string
+            let v_sv = ScalarValue::Int32(Some(5));
+            let regex_sv = ScalarValue::LargeUtf8(Some(regex.to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let type_err = re.expect_err("invalid types should have failed");
+            assert!(
+                type_err.strip_backtrace().starts_with("Internal error: Unsupported data type")
+            );
+
+            // pattern not a string
+            let v_sv = ScalarValue::LargeUtf8(Some(v.to_string()));
+            let regex_sv = ScalarValue::Int64(Some(7));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx.clone()]);
+            let type_err = re.expect_err("invalid types should have failed");
+            assert!(
+                type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the input arrays to be of type")
+            );
+
+            // index not an integer
+            let v_sv = ScalarValue::Utf8View(Some(v.to_string()));
+            let regex_sv = ScalarValue::Utf8View(Some(regex.to_string()));
+            let idx_sv = ScalarValue::Utf8View(Some("2".to_string()));
+            let re = regexp_extract_with_scalar_values(&[v_sv, regex_sv, idx_sv]);
+            let type_err = re.expect_err("invalid types should have failed");
+            assert!(
+                type_err.strip_backtrace().starts_with("Arrow error: Compute error: regexp_extract() expected the idx array")
             );
         });
     }
